@@ -1,0 +1,22 @@
+﻿services:
+#  ukrchatbot:
+#    image: ukrchatbot
+#    build:
+#      context: .
+#      dockerfile: UkrChatBot/Dockerfile
+  
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+  
+  ukrchatbot.db:
+    image: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: UkrChatBotDb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./ukrchatbot.db:/var/lib/postgresql/data
