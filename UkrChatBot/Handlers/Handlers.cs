@@ -38,8 +38,8 @@ public class Handlers
 
     private static async Task<List<Category>> GetCategories(IConfiguration configuration, CancellationToken cancellationToken)
     {
-        var connection = await ConnectionMultiplexer.ConnectAsync(configuration.GetConnectionString("Redis") ??
-                                                                  throw new InvalidOperationException());
+        await using var connection = await ConnectionMultiplexer.ConnectAsync(configuration.GetConnectionString("Redis") ??
+                                                                              throw new InvalidOperationException());
         var db = connection.GetDatabase();
         var cachedCategories = await db.StringGetAsync("categories");
         
@@ -58,7 +58,7 @@ public class Handlers
             
             await db.StringSetAsync("categories", JsonConvert.SerializeObject(categories), expiry: TimeSpan.FromMinutes(30));
         }
-
+        
         return categories;
     }
 
