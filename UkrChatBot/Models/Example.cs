@@ -8,5 +8,5 @@ public class Example
     public string Uri { get; set; }
     public string Image { get; set; }
     public string Thumb { get; set; }
-    public long CategoryId { get; set; }
+    public long Category { get; set; }
 }

@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
@@ -10,6 +11,11 @@ using UkrChatBot.Handlers;
 var configuration = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json")
     .Build();
+
+var logger = LoggerFactory.Create(builder =>
+{
+    builder.AddFilter(level => level >= LogLevel.Information);
+}).CreateLogger("UkrChatBot");
 
 var botClient = new TelegramBotClient(configuration.GetSection("TelegramBot")["Token"] ?? throw new InvalidOperationException());
 
@@ -40,11 +46,15 @@ async Task HandleUpdateAsync(ITelegramBotClient bot, Update update, Cancellation
     if (update.CallbackQuery is { } callbackQuery)
     {
         await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
+        var parseResult = long.TryParse(callbackQuery.Data.Replace("category_", ""), out long categoryId);
+        if (!parseResult)
+        {
+            logger.LogError("Couldn't parse categoryId");
+            return;
+        }
         
-        var categoryId = callbackQuery.Data.Replace("category_", "");
-        
-        await bot.SendTextMessageAsync(callbackQuery.Message.Chat.Id, $"You selected category: {categoryId}",
-            replyMarkup: new ReplyKeyboardRemove(),cancellationToken: cancellationToken);
+        //handle categoryId and return examples for this category
+        await Handlers.HandleCategoryChoseAsync(bot, callbackQuery.Message.Chat.Id, categoryId, configuration);
         
         await bot.EditMessageReplyMarkupAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId, 
             cancellationToken: cancellationToken);
@@ -64,6 +74,12 @@ async Task HandleUpdateAsync(ITelegramBotClient bot, Update update, Cancellation
         case "/categories":
             await Handlers.GetCategoriesAsync(bot, chatId, configuration, cancellationToken);
             break;
+        default:
+            if (int.TryParse(messageText, out int selectedIndex))
+            {
+                await Handlers.HandleExampleChooseAsync(botClient, chatId, selectedIndex, cancellationToken);
+            }
+            break;
     }
 }
 
@@ -75,7 +91,6 @@ Task HandlePollingErrorAsync(ITelegramBotClient bot, Exception exception, Cancel
             => $"Telegram API Error:\n[{apiRequestException.ErrorCode}]\n{apiRequestException.Message}",
         _ => exception.ToString()
     };
-
     Console.WriteLine(ErrorMessage);
     return Task.CompletedTask;
 }
