@@ -5,10 +5,10 @@ using Refit;
 using StackExchange.Redis;
 using Telegram.Bot;
 using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
 using UkrChatBot.Client;
 using UkrChatBot.Models;
+using UkrChatBot.Utils;
 
 namespace UkrChatBot.Handlers;
 
@@ -16,84 +16,50 @@ public class Handlers
 {
     private const string ApiUrl = "https://ukr-mova.in.ua";
     private static readonly UserState _state = new();
-    public static async Task GetCategoriesAsync(ITelegramBotClient bot, long chatId, IConfiguration configuration, CancellationToken cancellationToken = default)
-    {
-        var categories = await GetCategories(configuration, cancellationToken);
 
-        if (categories.Count > 0)
+    public static async Task GetCategoriesAsync(ITelegramBotClient bot, long chatId, IConfiguration configuration,
+        CancellationToken cancellationToken = default)
+    {
+        var redisCacheManager = new RedisCacheManager(configuration);
+        var cachedCategories = await redisCacheManager.GetFromCacheAsync<List<Category>>("categories");
+
+        if (cachedCategories == null)
+        {
+            var apiClient = RestService.For<IUkrMovaInUaApi>(ApiUrl);
+            cachedCategories = await apiClient.GetCategoriesAsync(cancellationToken);
+            await redisCacheManager.SetInCacheAsync("categories", cachedCategories,Constants.RedisExpiry);
+        }
+
+        if (cachedCategories.Count > 0)
         {
             var inlineKeyboardButtons = new List<List<InlineKeyboardButton>>();
-            foreach (var category in categories)
+            foreach (var category in cachedCategories)
             {
                 inlineKeyboardButtons.Add(new List<InlineKeyboardButton>
                 {
                     InlineKeyboardButton.WithCallbackData(category.Title, $"category_{category.Id}")
                 });
             }
-            
+
             var inlineKeyboardMarkup = new InlineKeyboardMarkup(inlineKeyboardButtons);
-            
-            await bot.SendTextMessageAsync(chatId, "Choose a category:", replyMarkup: inlineKeyboardMarkup, cancellationToken: cancellationToken);
+
+            await bot.SendTextMessageAsync(chatId, "Choose a category:", replyMarkup: inlineKeyboardMarkup,
+                cancellationToken: cancellationToken);
         }
         else
         {
             await bot.SendTextMessageAsync(chatId, "No categories available.", cancellationToken: cancellationToken);
         }
     }
-
-    private static async Task<List<Category>> GetCategories(IConfiguration configuration, CancellationToken cancellationToken)
+    public static async Task HandleCategoryChoseAsync(ITelegramBotClient bot, long chatId, long categoryId,
+        IConfiguration configuration, CancellationToken cancellationToken = default)
     {
-        await using var connection = await ConnectionMultiplexer.ConnectAsync(configuration.GetConnectionString("Redis") ??
-                                                                              throw new InvalidOperationException());
-        var db = connection.GetDatabase();
-        var cachedCategories = await db.StringGetAsync("categories");
-        
-        
-        List<Category> categories;
-    
-        if (!cachedCategories.IsNull)
-        {
-            // Categories found in cache, deserialize and use them
-            categories = JsonConvert.DeserializeObject<List<Category>>(cachedCategories);
-        }
-        else
-        {
-            var client = RestService.For<IUkrMovaInUaApi>(ApiUrl);
-            categories = await client.GetCategoriesAsync(cancellationToken);
-            
-            await db.StringSetAsync("categories", JsonConvert.SerializeObject(categories), expiry: TimeSpan.FromMinutes(30));
-        }
-        
-        return categories;
-    }
-
-    public static async Task HandleCategoryChoseAsync(ITelegramBotClient bot, long chatId, long categoryId, IConfiguration configuration, CancellationToken cancellationToken = default)
-    {
-        await using var connection = await ConnectionMultiplexer.ConnectAsync(configuration.GetConnectionString("Redis") ??
-                                                                              throw new InvalidOperationException());
-        var db = connection.GetDatabase();
-        var cachedExamples = await db.StringGetAsync("examples");
-
-        List<Example> examples;
-
-        if (!cachedExamples.IsNull)
-        {
-            examples = JsonConvert.DeserializeObject<List<Example>>(cachedExamples);
-        }
-        else
-        {
-            var client = RestService.For<IUkrMovaInUaApi>(ApiUrl);
-
-            examples = await client.GetExamplesAsync(cancellationToken);
-
-            await db.StringSetAsync("examples", JsonConvert.SerializeObject(examples),
-                expiry: TimeSpan.FromMinutes(30));
-        }
+        var examples = await GetExamples(configuration, cancellationToken);
 
         var examplesByCategory = examples?.Where(e => e.Category == categoryId);
-        _state.ExamplesByCategory = examplesByCategory; 
+        _state.ExamplesByCategory = examplesByCategory;
         var resultString = examplesByCategory.Select((e, i) => $"{i} - {e.Title}");
-        await bot.SendTextMessageAsync(chatId, "Choose example by entering number:\n" + string.Join('\n',resultString),
+        await bot.SendTextMessageAsync(chatId, "Choose example by entering number:\n" + string.Join('\n', resultString),
             replyMarkup: new ForceReplyMarkup(),
             cancellationToken: cancellationToken);
     }
@@ -103,7 +69,6 @@ public class Handlers
     {
         if (!_state.ExamplesByCategory.Any())
         {
-            // display error
             await bot.SendTextMessageAsync(chatId, "There is no examples", cancellationToken: cancellationToken);
             return;
         }
@@ -114,6 +79,43 @@ public class Handlers
                    $"{example.Content}";
         string plainText = Regex.Replace(text, "<.*?>", String.Empty);
 
-        await bot.SendPhotoAsync(chatId, img, caption:plainText, cancellationToken: cancellationToken);
+        await bot.SendPhotoAsync(chatId, img, caption: plainText, cancellationToken: cancellationToken);
+    }
+
+    public static async Task GetDailyRuleAsync(ITelegramBotClient bot, long chatId, IConfigurationRoot configuration,
+        CancellationToken cancellationToken)
+    {
+        var examples = await GetExamples(configuration, cancellationToken);
+        if (examples is null)
+        {
+            await bot.SendTextMessageAsync(chatId, "No examples available", cancellationToken: cancellationToken);
+        }
+
+        var day = DateTime.Now.Day;
+        var random = new Random(day);
+        var example = examples[random.Next(examples.Count)];
+        
+        var img = new InputFileUrl(ApiUrl + "/" + example.Image);
+        var text = $"{example.Title}\n" +
+                   $"{example.Content}";
+        string plainText = Regex.Replace(text, "<.*?>", String.Empty);
+
+        await bot.SendPhotoAsync(chatId, img, caption: plainText, cancellationToken: cancellationToken);
+    }
+
+    private static async Task<List<Example>?> GetExamples(IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var redisCacheManager = new RedisCacheManager(configuration);
+        var cachedExamples = await redisCacheManager.GetFromCacheAsync<List<Example>>("examples");
+
+        if (cachedExamples is null || cachedExamples.Count == 0)
+        {
+            var client = RestService.For<IUkrMovaInUaApi>(ApiUrl);
+            var examples = await client.GetExamplesAsync(cancellationToken);
+            await redisCacheManager.SetInCacheAsync("examples", examples, Constants.RedisExpiry);
+        }
+        
+        return cachedExamples;
     }
 }

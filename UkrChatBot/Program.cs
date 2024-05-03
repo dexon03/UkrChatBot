@@ -1,16 +1,19 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.ReplyMarkups;
+using UkrChatBot.Database;
 using UkrChatBot.Handlers;
 
 var configuration = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json")
     .Build();
+
+await MigrationAsync();
 
 var logger = LoggerFactory.Create(builder =>
 {
@@ -71,8 +74,24 @@ async Task HandleUpdateAsync(ITelegramBotClient bot, Update update, Cancellation
 
     switch (messageText)
     {
+        case "/start":
+            await AddStatisticsAsync("start");
+            string textMessage = "Hello! I am a bot that will help you learn Ukrainian.\n " +
+                             "Choose a category to get started.\n" +
+                             "/categories - get a list of categories\n" +
+                             "/dailyrule - get a daily rule";
+            await botClient.SendTextMessageAsync(chatId, textMessage, cancellationToken: cancellationToken);
+            
+            break;
+            
+            
         case "/categories":
+            await AddStatisticsAsync("categories");
             await Handlers.GetCategoriesAsync(bot, chatId, configuration, cancellationToken);
+            break;
+        case "/dailyrule":
+            await AddStatisticsAsync("dailyrule");
+            await Handlers.GetDailyRuleAsync(bot, chatId, configuration, cancellationToken);
             break;
         default:
             if (int.TryParse(messageText, out int selectedIndex))
@@ -93,4 +112,25 @@ Task HandlePollingErrorAsync(ITelegramBotClient bot, Exception exception, Cancel
     };
     Console.WriteLine(ErrorMessage);
     return Task.CompletedTask;
+}
+
+async Task MigrationAsync()
+{
+    using var dbContext = new ApplicationDbContext();
+    var migrations = await dbContext.Database.GetPendingMigrationsAsync();
+    if (migrations.Any())
+    {
+        await dbContext.Database.MigrateAsync();
+    }
+}
+
+async Task AddStatisticsAsync(string command)
+{
+    await using var dbContext = new ApplicationDbContext();
+    var handler = await dbContext.Handlers.FirstOrDefaultAsync(h => h.Title == command);
+    if (handler != null)
+    {
+        handler.ClickedCount++;
+        await dbContext.SaveChangesAsync();
+    }
 }
